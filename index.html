@@ -7,6 +7,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/vexflow/4.2.2/vexflow.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0c1220; }
@@ -18,23 +19,11 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-
-
 /* ═══════════════════════════════════════════════
    GLOBAL STYLES
-   @font-face loads Bravura (professional SMuFL music font) via CSS.
-   This does NOT use script injection, so it works in the artifact env.
-   If Bravura loads the clefs/accidentals render with engraving-quality glyphs.
-   If not, we fall back to Times New Roman musical symbols.
 ═══════════════════════════════════════════════ */
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap');
-
-  @font-face {
-    font-family: 'Bravura';
-    src: url('https://cdn.jsdelivr.net/npm/@vexflow-fonts/bravura/bravura.woff2') format('woff2');
-    font-display: block;
-  }
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0c1220; font-family: 'DM Sans', sans-serif; color: #f1ece2; }
@@ -66,7 +55,7 @@ const CSS = `
 /* ═══════════════════════════════════════════════
    MUSIC DATA
 ═══════════════════════════════════════════════ */
-// Pitch class 0–11: diatonic index (d), accidental ('sharp'|'flat'|'')
+// Pitch class 0–11
 const PITCH = [
   { d: 0, a: ""      }, // C
   { d: 0, a: "sharp" }, // C#
@@ -98,8 +87,6 @@ const INSTR = {
     strs: [{ n: "C", m: 36 }, { n: "G", m: 43 }, { n: "D", m: 50 }, { n: "A", m: 57 }],
     maxP: 7, desc: "C · G · D · A  ·  Bass clef",
   },
-  // Bass: transposing instrument (8vb). MIDI = sounding pitch.
-  // displayMidi() adds 12 so the WRITTEN pitch appears on the staff.
   bass: {
     name: "Double Bass", clef: "bass",
     strs: [{ n: "E", m: 28 }, { n: "A", m: 33 }, { n: "D", m: 38 }, { n: "G", m: 43 }],
@@ -107,27 +94,11 @@ const INSTR = {
   },
 };
 
-// absD of the BOTTOM staff line per clef  (absD = octave×7 + diatonic)
-// Treble → E4 (2nd octave above middle C): 4×7+2 = 30
-// Bass   → G2: 2×7+4 = 18
-// Alto   → F3: 3×7+3 = 24
-const CLEF_BOT = { treble: 30, bass: 18, alto: 24 };
-
-const OK_MSGS = [
-  "Correct! 🎵","Nice work!","Spot on!","Excellent!","Perfect!",
-  "Nailed it! 🎶","Well played!","Brilliant!","Right on!","You got it!",
-];
-
 /* ═══════════════════════════════════════════════
    UTILITIES
 ═══════════════════════════════════════════════ */
 const pc  = midi => ((midi % 12) + 12) % 12;
 const oct = midi => Math.floor(midi / 12) - 1;
-
-function staffStep(midi, clef) {
-  const p = pc(midi);
-  return oct(midi) * 7 + PITCH[p].d - CLEF_BOT[clef];
-}
 
 // Bass is a transposing instrument — staff shows written pitch (sounding + 8va)
 function displayMidi(instrKey, soundingMidi) {
@@ -168,178 +139,107 @@ function formatTime(secs) {
   return `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, "0")}`;
 }
 
-/* ═══════════════════════════════════════════════
-   STAFF LAYOUT CONSTANTS
-   LS  = distance between adjacent staff lines (one "space")
-   HS  = half of LS = one staff position step
-   botY = y-coordinate of the bottom (1st) staff line
-═══════════════════════════════════════════════ */
-const LS    = 16;
-const HS    = LS / 2;
-const W_SVG = 190;
-const H_SVG = 230;
-const MID_Y = 108;                   // y of middle (3rd) staff line = step 4
-const BOT_Y = MID_Y + 2 * LS;       // y of bottom (1st) staff line = step 0 = 140
-
-// Note head is placed at ~72% from left (after clef + accidental space)
-const NOTE_X = 138;
-const NRX = 9, NRY = 6;             // note-head semi-axes
+const OK_MSGS = [
+  "Correct! 🎵","Nice work!","Spot on!","Excellent!","Perfect!",
+  "Nailed it! 🎶","Well played!","Brilliant!","Right on!","You got it!",
+];
 
 /* ═══════════════════════════════════════════════
-   STAFF SVG
+   VEXFLOW NOTE HELPERS
 ═══════════════════════════════════════════════ */
-function StaffView({ midi, clef, useBravura }) {
-  if (!midi) return null;
+// Maps pitch class → VexFlow note name (with accidental suffix)
+const VEX_NOTE_NAMES = ['c','c#','d','eb','e','f','f#','g','ab','a','bb','b'];
 
-  const step  = staffStep(midi, clef);
-  const acc   = PITCH[pc(midi)].a;
-  const noteY = BOT_Y - step * HS;
-  const stemUp = step < 4;
-
-  // Five staff lines at steps 0, 2, 4, 6, 8
-  const staffYs = [0, 2, 4, 6, 8].map(s => BOT_Y - s * HS);
-
-  // Ledger lines below staff (step < 0, even steps)
-  const ledgers = [];
-  if (step < 0) {
-    const lo = step % 2 === 0 ? step : step + 1;
-    for (let s = -2; s >= lo; s -= 2) ledgers.push(BOT_Y - s * HS);
-  }
-  // Ledger lines above staff (step > 8, even steps)
-  if (step > 8) {
-    const hi = step % 2 === 0 ? step : step - 1;
-    for (let s = 10; s <= hi; s += 2) ledgers.push(BOT_Y - s * HS);
-  }
-
-  const stemX    = stemUp ? NOTE_X + NRX : NOTE_X - NRX;
-  const stemEndY = stemUp ? noteY - 3.5 * LS : noteY + 3.5 * LS;
-
-  return (
-    <svg width={W_SVG} height={H_SVG} viewBox={`0 0 ${W_SVG} ${H_SVG}`}
-      style={{ display: "block" }}>
-
-      {/* Parchment background */}
-      <rect x={0} y={0} width={W_SVG} height={H_SVG} fill="#FBF7EE" rx={10} />
-
-      {/* Staff lines */}
-      {staffYs.map((y, i) => (
-        <line key={i} x1={28} y1={y} x2={W_SVG - 8} y2={y} stroke="#555" strokeWidth={1.2} />
-      ))}
-
-      {/* Ledger lines */}
-      {ledgers.map((y, i) => (
-        <line key={`ld${i}`}
-          x1={NOTE_X - LS - 2} y1={y} x2={NOTE_X + LS + 2} y2={y}
-          stroke="#555" strokeWidth={1.2} />
-      ))}
-
-      {/* Clef */}
-      <ClefGlyph clef={clef} useBravura={useBravura} />
-
-      {/* Accidental */}
-      {acc && (
-        <AccidentalGlyph
-          type={acc} noteY={noteY} useBravura={useBravura}
-          x={NOTE_X - NRX - (useBravura ? LS * 0.25 : LS * 0.5)}
-        />
-      )}
-
-      {/* Stem */}
-      <line x1={stemX} y1={noteY} x2={stemX} y2={stemEndY}
-        stroke="#111" strokeWidth={1.5} />
-
-      {/* Note head */}
-      <ellipse cx={NOTE_X} cy={noteY} rx={NRX} ry={NRY}
-        fill="#111" transform={`rotate(-12,${NOTE_X},${noteY})`} />
-    </svg>
-  );
+function midiToVexKey(midi) {
+  const p = pc(midi);
+  const o = oct(midi);
+  const name = VEX_NOTE_NAMES[p];
+  return { key: `${name}/${o}`, name };
 }
 
-/* ─── Clef glyphs ────────────────────────────────────────────
-   Bravura SMuFL: font-size = LS × 4 (so 1 staff space = 0.25em)
-   Glyph origin (text baseline) is placed ON the reference pitch line:
-     Treble → G line  = BOT_Y − LS
-     Bass   → F line  = BOT_Y − 3×LS
-     Alto   → C4 line = BOT_Y − 2×LS
-   Times New Roman fallback uses U+1D11E/1D122/1D121 with empirically
-   tuned sizes and positions.
-────────────────────────────────────────────────────────────── */
-function ClefGlyph({ clef, useBravura }) {
-  if (useBravura) {
-    // Bravura SMuFL codepoints + SMuFL-standard origin positions
-    const bravura = "'Bravura', 'Times New Roman', serif";
-    const fSize   = LS * 4; // 1 staff space = 0.25em → 4em = 4 staff spaces
-    const chars   = { treble: "\uE050", bass: "\uE062", alto: "\uE05C" };
-    const yPos    = {
-      treble: BOT_Y - LS,         // G line (2nd line from bottom)
-      bass:   BOT_Y - 3 * LS,     // F line (4th line from bottom)
-      alto:   BOT_Y - 2 * LS,     // C4 line (middle/3rd line)
-    };
-    return (
-      <text x={6} y={yPos[clef]} fontSize={fSize}
-        fontFamily={bravura} fill="#1a1a1a"
-        style={{ userSelect: "none" }}>
-        {chars[clef]}
-      </text>
-    );
-  }
+/* ═══════════════════════════════════════════════
+   STAFF VIEW — VexFlow 4.2.2
+   Renders a single quarter note on a properly engraved staff.
+   VexFlow handles: clef proportions, note placement, accidental
+   positioning, ledger lines, and stem direction automatically.
+═══════════════════════════════════════════════ */
+function StaffView({ midi, clef }) {
+  const containerRef = useRef(null);
 
-  // Times New Roman fallback — proportional to LS
-  const font = "'Times New Roman','Palatino Linotype','Georgia',serif";
-  if (clef === "treble")
-    return (
-      <text x={4} y={BOT_Y + LS * 1.1} fontSize={LS * 7.4}
-        fontFamily={font} fill="#1a1a1a" style={{ userSelect: "none" }}>
-        {"\u{1D11E}"}
-      </text>
-    );
-  if (clef === "bass")
-    return (
-      <text x={4} y={BOT_Y - LS * 1.0} fontSize={LS * 4.3}
-        fontFamily={font} fill="#1a1a1a" style={{ userSelect: "none" }}>
-        {"\u{1D122}"}
-      </text>
-    );
-  if (clef === "alto")
-    return (
-      <text x={2} y={BOT_Y + LS * 0.2} fontSize={LS * 4.7}
-        fontFamily={font} fill="#1a1a1a" style={{ userSelect: "none" }}>
-        {"\u{1D121}"}
-      </text>
-    );
-  return null;
-}
+  useEffect(() => {
+    if (!midi || !containerRef.current) return;
+    if (typeof Vex === 'undefined') return;
 
-/* ─── Accidental glyphs ─────────────────────────────────────
-   Bravura: U+E262 (sharp) / U+E260 (flat), fontSize = LS×4.
-   The SMuFL origin is at the pitch center → text y = noteY.
-   Times New Roman: ♯/♭ with baseline shifted to visually centre.
-────────────────────────────────────────────────────────────── */
-function AccidentalGlyph({ type, noteY, x, useBravura }) {
-  if (useBravura) {
-    const char  = type === "sharp" ? "\uE262" : "\uE260";
-    return (
-      <text x={x} y={noteY} fontSize={LS * 4}
-        fontFamily="'Bravura', 'Times New Roman', serif"
-        textAnchor="end" fill="#111"
-        style={{ userSelect: "none" }}>
-        {char}
-      </text>
-    );
-  }
+    const el = containerRef.current;
+    el.innerHTML = '';
 
-  // Times New Roman fallback
-  const font = "'Times New Roman','Palatino Linotype',serif";
-  if (type === "sharp")
-    return (
-      <text x={x} y={noteY + LS * 0.4} fontSize={LS * 2.2}
-        fontFamily={font} textAnchor="end" fill="#111"
-        style={{ userSelect: "none" }}>♯</text>
-    );
+    try {
+      const VF = Vex.Flow;
+      const { Renderer, Stave, StaveNote, Voice, Formatter, Accidental } = VF;
+
+      const W = 200, H = 165;
+
+      // Create VexFlow renderer targeting the container div
+      const renderer = new Renderer(el, Renderer.Backends.SVG);
+      renderer.resize(W, H);
+      const ctx = renderer.getContext();
+
+      // Insert parchment background rect as first SVG child
+      const svgEl = el.querySelector('svg');
+      if (svgEl) {
+        const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        bg.setAttribute('x', '0');
+        bg.setAttribute('y', '0');
+        bg.setAttribute('width', String(W));
+        bg.setAttribute('height', String(H));
+        bg.setAttribute('fill', '#FBF7EE');
+        bg.setAttribute('rx', '10');
+        svgEl.insertBefore(bg, svgEl.firstChild);
+      }
+
+      // Draw the 5-line staff with clef
+      const staveX = 10, staveY = 45, staveW = W - 22;
+      const stave = new Stave(staveX, staveY, staveW);
+      stave.addClef(clef);
+      stave.setContext(ctx).draw();
+
+      // Build the note
+      const { key, name } = midiToVexKey(midi);
+      const note = new StaveNote({ clef, keys: [key], duration: 'q' });
+
+      // Attach accidental modifier when the note name contains one
+      if (name.endsWith('#')) {
+        note.addModifier(new Accidental('#'), 0);
+      } else if (name.length > 1 && name.endsWith('b')) {
+        note.addModifier(new Accidental('b'), 0);
+      }
+
+      // One-beat voice (strict mode off so we don't need a time signature)
+      const voice = new Voice({ num_beats: 1, beat_value: 4 });
+      voice.setStrict(false);
+      voice.addTickables([note]);
+
+      // Format and draw
+      new Formatter().joinVoices([voice]).format([voice], staveW - 65);
+      voice.draw(ctx, stave);
+
+    } catch (err) {
+      console.error('VexFlow render error:', err);
+    }
+  }, [midi, clef]);
+
   return (
-    <text x={x} y={noteY + LS * 1.2} fontSize={LS * 2.4}
-      fontFamily={font} textAnchor="end" fill="#111"
-      style={{ userSelect: "none" }}>♭</text>
+    <div
+      ref={containerRef}
+      style={{
+        display: 'block',
+        width: 200,
+        height: 165,
+        borderRadius: 10,
+        overflow: 'hidden',
+        background: '#FBF7EE',
+      }}
+    />
   );
 }
 
@@ -356,8 +256,8 @@ function FChart({ instrKey, onAns, answered, corrP, selAns }) {
   const CR = 14, DR = 12;
 
   const openY = 28;
-  const sepY  = openY + CR + 9;          // = 51 — separator line
-  const PT    = sepY + DR + 9;           // = 72 — centre of first fingered row
+  const sepY  = openY + CR + 9;
+  const PT    = sepY + DR + 9;
 
   const W = PL + (strs.length - 1) * SS + PR;
   const H = PT + (maxP - 1) * RH + DR + PB;
@@ -406,7 +306,7 @@ function FChart({ instrKey, onAns, answered, corrP, selAns }) {
           textAnchor="middle" fontFamily="'DM Sans',sans-serif">{p}</text>
       ))}
 
-      {/* Separator — prominent, centred between the two rows */}
+      {/* Separator */}
       <line
         x1={PL - 14} y1={sepY}
         x2={PL + (strs.length - 1) * SS + 14} y2={sepY}
@@ -615,12 +515,11 @@ function ChallengeDone({ stats, elapsed, onAgain, onPractice, onHome }) {
 
 /* ═══════════════════════════════════════════════
    SCREEN: PLAYING
-   Fixed-height feedback zone so the staff + chart never shift.
 ═══════════════════════════════════════════════ */
 function PlayScreen({
   instrKey, mode, midi, answered, selAns, corrP,
   feedback, isCorrect, stats, challIdx, elapsed,
-  useBravura, onAns, onNext, onHome,
+  onAns, onNext, onHome,
 }) {
   const inst    = INSTR[instrKey];
   const isLastQ = mode === "challenge" && challIdx >= 9;
@@ -684,7 +583,7 @@ function PlayScreen({
         alignItems: "center", justifyContent: "center",
         padding: "28px 16px 0",
       }}>
-        {/* Staff + Chart — never shift */}
+        {/* Staff + Chart */}
         <div style={{
           display: "flex", flexWrap: "wrap",
           gap: 28, justifyContent: "center", alignItems: "flex-start",
@@ -698,7 +597,7 @@ function PlayScreen({
               color: "#94a3b8", fontSize: 10, textAlign: "center",
               marginBottom: 10, letterSpacing: 2, textTransform: "uppercase",
             }}>Find this note</p>
-            <StaffView midi={staffMidi} clef={inst.clef} useBravura={useBravura} />
+            <StaffView midi={staffMidi} clef={inst.clef} />
           </div>
 
           <div style={{
@@ -717,7 +616,7 @@ function PlayScreen({
           </div>
         </div>
 
-        {/* Fixed-height feedback zone — staff/chart above never shifts */}
+        {/* Fixed-height feedback zone */}
         <div style={{
           height: 126, flexShrink: 0,
           display: "flex", flexDirection: "column",
@@ -776,17 +675,6 @@ function App() {
   const [challIdx,   setChallIdx]   = useState(0);
   const [elapsed,    setElapsed]    = useState(0);
   const timerRef = useRef(null);
-
-  // Try to use the Bravura font for high-quality music symbols.
-  // This is purely an enhancement — if the font doesn't load, we use
-  // Times New Roman. The quiz works and shows notation immediately either way.
-  const [useBravura, setUseBravura] = useState(false);
-  useEffect(() => {
-    if (!document?.fonts) return;
-    document.fonts.ready.then(() => {
-      setUseBravura(document.fonts.check(`${LS * 4}px Bravura`));
-    });
-  }, []);
 
   /* ── Count-up timer ── */
   useEffect(() => {
@@ -857,7 +745,6 @@ function App() {
       answered={answered} selAns={selAns} corrP={corrP}
       feedback={feedback} isCorrect={isCorrect} stats={stats}
       challIdx={challIdx} elapsed={elapsed}
-      useBravura={useBravura}
       onAns={onAnswer} onNext={onNext}
       onHome={() => setPhase("selectInstr")}
     />
