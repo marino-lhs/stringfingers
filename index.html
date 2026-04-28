@@ -7,7 +7,7 @@
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/vexflow/4.2.2/vexflow.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/vexflow/3.0.9/vexflow-min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0c1220; }
@@ -146,8 +146,8 @@ const OK_MSGS = [
 
 /* ═══════════════════════════════════════════════
    VEXFLOW NOTE HELPERS
+   Maps MIDI pitch → VexFlow key string, e.g. "c#/4"
 ═══════════════════════════════════════════════ */
-// Maps pitch class → VexFlow note name (with accidental suffix)
 const VEX_NOTE_NAMES = ['c','c#','d','eb','e','f','f#','g','ab','a','bb','b'];
 
 function midiToVexKey(midi) {
@@ -158,33 +158,31 @@ function midiToVexKey(midi) {
 }
 
 /* ═══════════════════════════════════════════════
-   STAFF VIEW — VexFlow 4.2.2
-   Renders a single quarter note on a properly engraved staff.
-   VexFlow handles: clef proportions, note placement, accidental
-   positioning, ledger lines, and stem direction automatically.
+   STAFF VIEW — VexFlow 3.0.9 (cdnjs)
+   VexFlow handles clef proportions, note placement,
+   accidental positioning, ledger lines, and stem direction.
 ═══════════════════════════════════════════════ */
 function StaffView({ midi, clef }) {
   const containerRef = useRef(null);
 
   useEffect(() => {
     if (!midi || !containerRef.current) return;
-    if (typeof Vex === 'undefined') return;
+    if (typeof Vex === 'undefined' || !Vex.Flow) return;
 
     const el = containerRef.current;
     el.innerHTML = '';
 
     try {
       const VF = Vex.Flow;
-      const { Renderer, Stave, StaveNote, Voice, Formatter, Accidental } = VF;
 
-      const W = 200, H = 165;
+      const W = 200, H = 170;
 
-      // Create VexFlow renderer targeting the container div
-      const renderer = new Renderer(el, Renderer.Backends.SVG);
+      // SVG renderer
+      const renderer = new VF.Renderer(el, VF.Renderer.Backends.SVG);
       renderer.resize(W, H);
       const ctx = renderer.getContext();
 
-      // Insert parchment background rect as first SVG child
+      // Insert parchment background rect as the first SVG child
       const svgEl = el.querySelector('svg');
       if (svgEl) {
         const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -198,33 +196,41 @@ function StaffView({ midi, clef }) {
       }
 
       // Draw the 5-line staff with clef
-      const staveX = 10, staveY = 45, staveW = W - 22;
-      const stave = new Stave(staveX, staveY, staveW);
+      const staveX = 10, staveY = 50, staveW = W - 22;
+      const stave = new VF.Stave(staveX, staveY, staveW);
       stave.addClef(clef);
       stave.setContext(ctx).draw();
 
       // Build the note
       const { key, name } = midiToVexKey(midi);
-      const note = new StaveNote({ clef, keys: [key], duration: 'q' });
+      const note = new VF.StaveNote({ clef, keys: [key], duration: 'q' });
 
-      // Attach accidental modifier when the note name contains one
+      // VexFlow 3.x accidental API: addAccidental(noteIndex, Accidental)
       if (name.endsWith('#')) {
-        note.addModifier(new Accidental('#'), 0);
+        note.addAccidental(0, new VF.Accidental('#'));
       } else if (name.length > 1 && name.endsWith('b')) {
-        note.addModifier(new Accidental('b'), 0);
+        note.addAccidental(0, new VF.Accidental('b'));
       }
 
-      // One-beat voice (strict mode off so we don't need a time signature)
-      const voice = new Voice({ num_beats: 1, beat_value: 4 });
+      // Voice with strict mode off (no time-signature needed)
+      const voice = new VF.Voice({ num_beats: 1, beat_value: 4 });
       voice.setStrict(false);
       voice.addTickables([note]);
 
       // Format and draw
-      new Formatter().joinVoices([voice]).format([voice], staveW - 65);
+      new VF.Formatter().joinVoices([voice]).format([voice], staveW - 65);
       voice.draw(ctx, stave);
 
     } catch (err) {
       console.error('VexFlow render error:', err);
+      // Visible fallback: show the note name so the quiz remains usable
+      const { name } = midiToVexKey(midi);
+      const o = oct(midi);
+      el.innerHTML = `<div style="width:200px;height:170px;background:#FBF7EE;
+        border-radius:10px;display:flex;align-items:center;justify-content:center;
+        font-size:28px;font-weight:bold;color:#333;font-family:serif;">
+        ${name.replace('b','♭').replace('#','♯').toUpperCase()}${o}
+      </div>`;
     }
   }, [midi, clef]);
 
@@ -234,7 +240,7 @@ function StaffView({ midi, clef }) {
       style={{
         display: 'block',
         width: 200,
-        height: 165,
+        height: 170,
         borderRadius: 10,
         overflow: 'hidden',
         background: '#FBF7EE',
