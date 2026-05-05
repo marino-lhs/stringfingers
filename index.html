@@ -157,10 +157,25 @@ function midiToVexKey(midi) {
   return { key: `${name}/${o}`, name };
 }
 
+// Middle-line MIDI for each clef — notes AT or ABOVE get stem down (-1)
+// Treble: B4=71, Alto: C4=60, Bass: D3=50
+const CLEF_MID_MIDI = { treble: 71, alto: 60, bass: 50 };
+
+function stemDirection(midi, clef) {
+  return midi >= CLEF_MID_MIDI[clef]
+    ? Vex.Flow.Stem.DOWN   // -1
+    : Vex.Flow.Stem.UP;    //  1
+}
+
 /* ═══════════════════════════════════════════════
    STAFF VIEW — VexFlow 3.0.9 (cdnjs)
-   VexFlow handles clef proportions, note placement,
-   accidental positioning, ledger lines, and stem direction.
+
+   Centering strategy: use a narrow stave (just wide
+   enough for clef + one note) and center it in the SVG.
+   This eliminates the big blank gap to the right.
+
+   Stem direction: explicitly computed from the note's
+   position relative to the middle staff line per clef.
 ═══════════════════════════════════════════════ */
 function StaffView({ midi, clef }) {
   const containerRef = useRef(null);
@@ -177,12 +192,18 @@ function StaffView({ midi, clef }) {
 
       const W = 200, H = 170;
 
+      // Narrow stave — just enough for clef + one note.
+      // Center it horizontally so the note lands mid-SVG.
+      const staveW = 125;
+      const staveX = (W - staveW) / 2;  // = 37.5
+      const staveY = 48;
+
       // SVG renderer
       const renderer = new VF.Renderer(el, VF.Renderer.Backends.SVG);
       renderer.resize(W, H);
       const ctx = renderer.getContext();
 
-      // Insert parchment background rect as the first SVG child
+      // Parchment background
       const svgEl = el.querySelector('svg');
       if (svgEl) {
         const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
@@ -195,35 +216,35 @@ function StaffView({ midi, clef }) {
         svgEl.insertBefore(bg, svgEl.firstChild);
       }
 
-      // Draw the 5-line staff with clef
-      const staveX = 10, staveY = 50, staveW = W - 22;
+      // Staff with clef
       const stave = new VF.Stave(staveX, staveY, staveW);
       stave.addClef(clef);
       stave.setContext(ctx).draw();
 
-      // Build the note
+      // Note — stem direction explicitly set
       const { key, name } = midiToVexKey(midi);
-      const note = new VF.StaveNote({ clef, keys: [key], duration: 'q' });
+      const stemDir = stemDirection(midi, clef);
+      const note = new VF.StaveNote({ clef, keys: [key], duration: 'q', stem_direction: stemDir });
 
-      // VexFlow 3.x accidental API: addAccidental(noteIndex, Accidental)
+      // VexFlow 3.x accidentals
       if (name.endsWith('#')) {
         note.addAccidental(0, new VF.Accidental('#'));
       } else if (name.length > 1 && name.endsWith('b')) {
         note.addAccidental(0, new VF.Accidental('b'));
       }
 
-      // Voice with strict mode off (no time-signature needed)
+      // Voice — strict mode off (no time signature needed)
       const voice = new VF.Voice({ num_beats: 1, beat_value: 4 });
       voice.setStrict(false);
       voice.addTickables([note]);
 
-      // Format and draw
-      new VF.Formatter().joinVoices([voice]).format([voice], staveW - 65);
+      // Format into the space to the right of the clef (~45px wide)
+      // so the note is centered within the narrow stave
+      new VF.Formatter().joinVoices([voice]).format([voice], staveW - 50);
       voice.draw(ctx, stave);
 
     } catch (err) {
       console.error('VexFlow render error:', err);
-      // Visible fallback: show the note name so the quiz remains usable
       const { name } = midiToVexKey(midi);
       const o = oct(midi);
       el.innerHTML = `<div style="width:200px;height:170px;background:#FBF7EE;
